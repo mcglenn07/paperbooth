@@ -5,6 +5,7 @@ import AppKit
 struct PaperboothApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     @StateObject private var model = BoothModel()
+    @StateObject private var guestDisplay = GuestDisplayController()
 
     init() {
         if CommandLine.arguments.contains("--self-test") {
@@ -15,10 +16,11 @@ struct PaperboothApp: App {
 
     var body: some Scene {
         WindowGroup("Paperbooth") {
-            BoothView(model: model, camera: model.camera)
+            BoothView(model: model, camera: model.camera, guestDisplay: guestDisplay)
                 .frame(minWidth: 1060, minHeight: 720)
                 .preferredColorScheme(.light)
                 .onAppear { delegate.model = model }
+                .onDisappear { guestDisplay.close() }
         }
         .defaultSize(width: 1240, height: 820)
         .windowStyle(.hiddenTitleBar)
@@ -56,6 +58,7 @@ private let boothGreen = Color(red: 0.83, green: 0.92, blue: 0.67)
 struct BoothView: View {
     @ObservedObject var model: BoothModel
     @ObservedObject var camera: CameraController
+    @ObservedObject var guestDisplay: GuestDisplayController
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,6 +69,10 @@ struct BoothView: View {
                     Text("A LITTLE MOMENT, MADE TO KEEP.").font(.system(size: 9, weight: .semibold)).tracking(2).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    if guestDisplay.isOpen { guestDisplay.close() }
+                    else { model.showSettings = true }
+                } label: { Label(guestDisplay.isOpen ? "Close Guest View" : "Guest View", systemImage: "display.2") }
                 Label("6 × 4 LANDSCAPE", systemImage: "rectangle").font(.system(size: 10, weight: .semibold)).tracking(1)
                     .padding(.horizontal, 14).padding(.vertical, 9).background(.white.opacity(0.7), in: Capsule())
                 Button { NSApp.keyWindow?.toggleFullScreen(nil) } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.help("Toggle full screen")
@@ -112,7 +119,7 @@ struct BoothView: View {
                             }
                             Spacer()
                         }.padding(18).foregroundStyle(.white).allowsHitTesting(false)
-                    }.aspectRatio(1.6, contentMode: .fit).frame(maxWidth: .infinity, maxHeight: 350)
+                    }.aspectRatio(model.captureAspectRatio, contentMode: .fit).frame(maxWidth: .infinity, maxHeight: 350)
                         .background(boothInk).clipShape(RoundedRectangle(cornerRadius: 16))
 
                     HStack(spacing: 12) {
@@ -171,7 +178,9 @@ struct BoothView: View {
                             .onChange(of: model.title) { _, value in if value.count > 120 { model.title = String(value.prefix(120)) } }
                         TextField("Date or a short message", text: $model.subtitle).textFieldStyle(.roundedBorder)
                             .onChange(of: model.subtitle) { _, value in if value.count > 64 { model.subtitle = String(value.prefix(64)) } }
-                        if model.titleArtwork != nil { Text("Your title artwork replaces these text fields on the sheet.").font(.caption).foregroundStyle(.secondary) }
+                        if model.overlayPhotoRects != nil {
+                            Text("Your full-sheet template includes the title and photo placement.").font(.caption).foregroundStyle(.secondary)
+                        } else if model.titleArtwork != nil { Text("Your title artwork replaces these text fields on the sheet.").font(.caption).foregroundStyle(.secondary) }
                         HStack {
                             Picker("Style", selection: $model.theme) { Text("Midnight").tag("Midnight"); Text("Warm paper").tag("Warm paper") }.labelsHidden()
                             Button("Artwork…") { model.showSettings = true }.buttonStyle(.borderless)
@@ -186,10 +195,14 @@ struct BoothView: View {
                             .disabled(model.photos.count != 3 || model.takingPhotos)
                     }.controlSize(.large)
                     if let folder = model.savedFolder {
-                        Button { NSWorkspace.shared.open(folder) } label: { Label("Show saved session", systemImage: "folder") }.buttonStyle(.borderless).font(.caption)
+                        Button { NSWorkspace.shared.open(folder) } label: { Label("Show saved files", systemImage: "folder") }.buttonStyle(.borderless).font(.caption)
                     } else {
-                        Text(model.outputFolder == nil ? "Choose a save folder in Setup to save every session automatically." : "Completed sessions save automatically to \(model.outputFolder!.lastPathComponent).")
+                        Text(model.mergedOutputFolder == nil ? "Choose a finished sheets folder in Setup to save automatically." : "Finished sheets save automatically to \(model.mergedOutputFolder!.lastPathComponent).")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    if model.mergedOutputFolder != nil {
+                        Button { model.openFinishedSheetsFolder() } label: { Label("Open finished sheets", systemImage: "photo.on.rectangle") }
+                            .buttonStyle(.borderless).font(.caption)
                     }
                     Spacer(minLength: 0)
                 }.frame(width: 400)
@@ -203,7 +216,7 @@ struct BoothView: View {
         }
         .foregroundStyle(boothInk)
         .background(Color(red: 0.94, green: 0.94, blue: 0.91))
-        .sheet(isPresented: $model.showSettings) { SetupView(model: model, camera: camera) }
+        .sheet(isPresented: $model.showSettings) { SetupView(model: model, camera: camera, guestDisplay: guestDisplay) }
         .alert("Something needs attention", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
@@ -230,12 +243,28 @@ struct BoothView: View {
 struct SetupView: View {
     @ObservedObject var model: BoothModel
     @ObservedObject var camera: CameraController
+    @ObservedObject var guestDisplay: GuestDisplayController
     @Environment(\.dismiss) var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack { Text("Set the scene").font(.system(size: 26, weight: .semibold, design: .serif)); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
             Form {
+                Section("Guest display") {
+                    Picker("Display for guests", selection: $guestDisplay.selectedID) {
+                        if guestDisplay.displays.isEmpty { Text("No display detected").tag(UInt32(0)) }
+                        ForEach(guestDisplay.displays) { display in Text(display.name).tag(display.id) }
+                    }
+                    HStack {
+                        Button("Show Guest View") { guestDisplay.show(model: model) }
+                            .disabled(guestDisplay.displays.count < 2)
+                        Button("Preview in window") { guestDisplay.show(model: model, previewOnly: true) }
+                        if guestDisplay.isOpen { Button("Close Guest View") { guestDisplay.close() } }
+                    }
+                    Text(guestDisplay.message).font(.caption).foregroundStyle(.secondary)
+                    Text("Guests see the camera, countdown and pose prompts. Keep macOS displays extended and turn off Accessibility Zoom. Your controls stay on this Mac.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("Camera & countdown") {
                     HStack {
                         Picker("Camera", selection: Binding(get: { camera.selectedID }, set: { camera.select($0) })) {
@@ -254,16 +283,38 @@ struct SetupView: View {
                     artworkRow("Background", name: model.backgroundName, kind: "background", present: model.background != nil)
                     artworkRow("Title cell", name: model.titleArtworkName, kind: "titleArtwork", present: model.titleArtwork != nil)
                     artworkRow("Overlay", name: model.overlayName, kind: "overlay", present: model.overlay != nil)
+                    if model.overlayPhotoRects != nil {
+                        Text("Photo placement is matched to this template. Its artwork includes the background and event title.").font(.caption).foregroundStyle(.secondary)
+                    }
                     Text("Background / overlay: 1800 × 1200 px. Title artwork: 800 × 500 px. Overlays should be transparent PNGs with openings for the three photos.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Saving & printing") {
-                    HStack { Text(model.outputFolder?.path ?? "No save folder chosen").font(.caption).lineLimit(2); Spacer(); Button("Choose folder…") { model.chooseOutputFolder() } }
-                    Text("After choosing a folder, completed sessions save automatically: one 1800 × 1200 JPEG at 300 dpi plus three original photos. Print on 6 × 4-inch landscape paper; select the matching paper size and borderless mode if your printer supports it.")
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Finished sheets")
+                            Text(model.mergedOutputFolder?.path ?? "Choose where to collect your merged photos").font(.caption).lineLimit(2).textSelection(.enabled)
+                        }
+                        Spacer()
+                        Button("Choose sheets folder…") { model.chooseFinishedSheetsFolder() }
+                    }
+                    Text("All completed 6 × 4 JPEGs go directly into this folder with unique names, ready for Facebook uploads. This choice is remembered after quitting.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Session backups")
+                            Text(model.outputFolder?.path ?? "Optional — keep the three individual photos too").font(.caption).lineLimit(2).textSelection(.enabled)
+                        }
+                        Spacer()
+                        Button("Choose backups folder…") { model.chooseOutputFolder() }
+                    }
+                    Text("Backups keep each session's original photos and sheet together. Without a custom sheets folder, merged images collect in Finished Sheets inside the backup folder. Existing exports are not moved.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Print on 6 × 4-inch landscape paper; select the matching paper size and borderless mode if your printer supports it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.formStyle(.grouped)
-        }.padding(24).frame(width: 650, height: 680)
+        }.padding(24).frame(width: 650, height: 680).onAppear { guestDisplay.refresh() }
     }
 
     private func artworkRow(_ title: String, name: String, kind: String, present: Bool) -> some View {

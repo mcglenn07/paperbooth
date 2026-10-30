@@ -9,6 +9,7 @@ struct SheetStyle {
     var background: NSImage?
     var titleArtwork: NSImage?
     var overlay: NSImage?
+    var photoRects: [NSRect]?
 }
 
 enum SheetRenderer {
@@ -69,9 +70,11 @@ enum SheetRenderer {
             }
         }
         for index in 0..<3 {
-            let rect = cells[index]
-            NSColor(hex: 0xF8F4EA).setFill()
-            rect.insetBy(dx: -8, dy: -8).fill()
+            let rect = style.photoRects?[index] ?? cells[index]
+            if style.photoRects == nil {
+                NSColor(hex: 0xF8F4EA).setFill()
+                rect.insetBy(dx: -8, dy: -8).fill()
+            }
             if photos.indices.contains(index) {
                 fill(photos[index], in: rect)
             } else {
@@ -83,6 +86,7 @@ enum SheetRenderer {
                      font: .systemFont(ofSize: 18, weight: .medium), color: ink.withAlphaComponent(0.6), tracking: 4)
             }
         }
+        if style.photoRects == nil {
         let titleRect = cells[3]
         if let artwork = style.titleArtwork {
             fill(artwork, in: titleRect)
@@ -109,6 +113,7 @@ enum SheetRenderer {
             NSRect(x: titleRect.minX + 56, y: titleRect.maxY - 92, width: 688, height: 1).fill()
             text(style.subtitle, in: NSRect(x: titleRect.minX + 56, y: titleRect.maxY - 66, width: 688, height: 42),
                  font: .systemFont(ofSize: 19, weight: .medium), color: ink.withAlphaComponent(0.75), tracking: 1, alignment: .left)
+        }
         }
         if let overlay = style.overlay {
             overlay.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver,

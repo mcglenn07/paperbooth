@@ -1,12 +1,22 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import CoreImage
 
 // Capture state lives on queue; observable UI state is only changed on the main thread.
-final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate, @unchecked Sendable {
+final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "app.paperbooth.camera")
     private let output = AVCapturePhotoOutput()
+    private let videoOutput = AVCaptureVideoDataOutput()
+    private let frameQueue = DispatchQueue(label: "app.paperbooth.guest-preview", qos: .userInitiated)
+    private let imageContext = CIContext(options: [.cacheIntermediates: false])
+    private let frameDelivery = DispatchSemaphore(value: 1)
+    private var guestActive = false // frameQueue only
+    private var lastFrameTime = -Double.infinity
+    @Published var guestFrame: NSImage?
+    @Published var guestPreviewAvailable = false
+    private var guestRequested = false // main thread only
     private var pending: CheckedContinuation<NSImage, Error>?
     private var captureID: Int64?
     private var observers: [NSObjectProtocol] = []
@@ -73,6 +83,7 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
     func select(_ id: String) {
         guard !busy, let device = devices.first(where: { $0.uniqueID == id }) else { return }
         selectedID = id
+        guestFrame = nil
         ready = false
         busy = true
         message = "Connecting to \(device.localizedName)…"
@@ -90,6 +101,18 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
                     else if self.session.canSetSessionPreset(.high) { self.session.sessionPreset = .high }
                     guard self.session.canAddOutput(self.output) else { throw BoothError.message("This camera does not support photo capture.") }
                     self.session.addOutput(self.output)
+                    self.videoOutput.alwaysDiscardsLateVideoFrames = true
+                    self.videoOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+                    self.videoOutput.setSampleBufferDelegate(self, queue: self.frameQueue)
+                    let supportsGuestPreview = self.session.canAddOutput(self.videoOutput)
+                    if supportsGuestPreview {
+                        self.session.addOutput(self.videoOutput)
+                        if let connection = self.videoOutput.connection(with: .video), connection.isVideoMirroringSupported {
+                            connection.automaticallyAdjustsVideoMirroring = false
+                            connection.isVideoMirrored = false
+                        }
+                    }
+                    DispatchQueue.main.async { self.guestPreviewAvailable = supportsGuestPreview }
                     self.session.commitConfiguration()
                 } catch {
                     self.session.commitConfiguration()
@@ -173,6 +196,30 @@ final class CameraController: NSObject, ObservableObject, AVCapturePhotoCaptureD
             self.pending = nil
             self.captureID = nil
             continuation?.resume(throwing: CancellationError())
+        }
+    }
+
+    func setGuestPreviewActive(_ active: Bool) {
+        guestRequested = active
+        if !active { guestFrame = nil }
+        frameQueue.async { self.guestActive = active; self.lastFrameTime = -Double.infinity }
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard guestActive, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let time = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        guard time - lastFrameTime >= 1.0 / 24 || time < lastFrameTime else { return }
+        guard frameDelivery.wait(timeout: .now()) == .success else { return }
+        lastFrameTime = time
+        let source = CIImage(cvPixelBuffer: buffer)
+        let scale = min(1, 1920 / max(source.extent.width, source.extent.height))
+        let resized = source.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let image = imageContext.createCGImage(resized, from: resized.extent) else { frameDelivery.signal(); return }
+        DispatchQueue.main.async {
+            defer { self.frameDelivery.signal() }
+            if self.guestRequested {
+                self.guestFrame = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+            }
         }
     }
 
