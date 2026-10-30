@@ -89,7 +89,10 @@ struct BoothView: View {
                     }
                     ZStack {
                         CameraPreview(session: camera.session, mirrored: model.mirrored)
-                        if !camera.ready {
+                        if model.showingFinishedSheet {
+                            Color.black
+                            FinishedSheetView(image: model.proof)
+                        } else if !camera.ready {
                             Color(red: 0.09, green: 0.16, blue: 0.18)
                             VStack(spacing: 14) {
                                 Image(systemName: "camera.fill").font(.system(size: 34, weight: .light)).foregroundStyle(boothGreen)
@@ -105,12 +108,12 @@ struct BoothView: View {
                                     .background(boothGreen, in: Capsule()).foregroundStyle(boothInk).disabled(camera.busy || model.takingPhotos)
                             }.padding(30)
                         }
-                        if let count = model.countdown {
+                        if !model.showingFinishedSheet, let count = model.countdown {
                             Text("\(count)").font(.system(size: 120, weight: .bold, design: .rounded))
                                 .foregroundStyle(.white).shadow(color: .black.opacity(0.35), radius: 15)
                         }
                         if model.flash { Color.white }
-                        VStack {
+                        if !model.showingFinishedSheet { VStack {
                             HStack {
                                 Text(model.takingPhotos ? "PHOTO \(min(model.photos.count + 1, 3)) OF 3" : "LIVE VIEW")
                                     .font(.system(size: 9, weight: .bold)).tracking(1.5)
@@ -118,9 +121,9 @@ struct BoothView: View {
                                 Spacer()
                             }
                             Spacer()
-                        }.padding(18).foregroundStyle(.white).allowsHitTesting(false)
-                    }.aspectRatio(model.captureAspectRatio, contentMode: .fit).frame(maxWidth: .infinity, maxHeight: 350)
-                        .background(boothInk).clipShape(RoundedRectangle(cornerRadius: 16))
+                        }.padding(18).foregroundStyle(.white).allowsHitTesting(false) }
+                    }.aspectRatio(model.viewerAspectRatio, contentMode: .fit).frame(maxWidth: .infinity, maxHeight: 350)
+                        .background(boothInk).clipShape(RoundedRectangle(cornerRadius: model.showingFinishedSheet ? 0 : 16))
 
                     HStack(spacing: 12) {
                         ForEach(0..<3) { index in

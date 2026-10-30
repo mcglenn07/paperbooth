@@ -128,7 +128,9 @@ struct GuestView: View {
                     .lineLimit(2).minimumScaleFactor(0.5).multilineTextAlignment(.center)
                 ZStack {
                     Color.black
-                    if camera.ready, let frame = camera.guestFrame {
+                    if model.showingFinishedSheet {
+                        FinishedSheetView(image: model.proof)
+                    } else if camera.ready, let frame = camera.guestFrame {
                         GeometryReader { area in
                             Image(nsImage: frame).resizable().scaledToFill()
                                 .frame(width: area.size.width, height: area.size.height).clipped()
@@ -141,13 +143,13 @@ struct GuestView: View {
                                 .font(.system(size: max(16, 26 * scale))).multilineTextAlignment(.center)
                         }.padding(30)
                     }
-                    if let countdown = model.countdown {
+                    if !model.showingFinishedSheet, let countdown = model.countdown {
                         Text("\(countdown)").font(.system(size: max(80, 190 * scale), weight: .heavy, design: .rounded))
                             .shadow(color: .black.opacity(0.8), radius: 12)
                     }
                     if model.flash { Color.white }
                 }
-                .aspectRatio(model.captureAspectRatio, contentMode: .fit)
+                .aspectRatio(model.viewerAspectRatio, contentMode: .fit)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 Text(prompt).font(.system(size: max(18, 32 * scale), weight: .semibold, design: .rounded))
                     .lineLimit(2).minimumScaleFactor(0.5).multilineTextAlignment(.center)
@@ -157,10 +159,19 @@ struct GuestView: View {
 
     private var prompt: String {
         if model.flash { return "Lovely!" }
-        if model.photos.count == 3 { return "All done! Thank you for the smiles." }
+        if model.showingFinishedSheet { return "Here are your photos! Thank you for the smiles." }
         if !camera.ready { return "Your photo moment is coming up." }
         if model.countdown != nil { return "Photo \(model.photos.count + 1) of 3 — look at the camera!" }
         if model.takingPhotos { return model.photos.isEmpty ? "Get ready!" : "Great! Try a new pose." }
         return model.photos.isEmpty ? "Find your pose. Your host will start shortly." : "Hold on — your host will continue shortly."
+    }
+}
+
+// Display the composed sheet as exported, without cropping or mirroring its text.
+struct FinishedSheetView: View {
+    let image: NSImage
+    var body: some View {
+        Image(nsImage: image).resizable().scaledToFit()
+            .accessibilityLabel("Your completed three-photo sheet")
     }
 }

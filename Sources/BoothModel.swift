@@ -56,6 +56,8 @@ final class BoothModel: ObservableObject {
         let rect = overlayPhotoRects?[min(photos.count, 2)] ?? SheetRenderer.cells[0]
         return rect.width / rect.height
     }
+    var showingFinishedSheet: Bool { photos.count == 3 }
+    var viewerAspectRatio: CGFloat { showingFinishedSheet ? 1.5 : captureAspectRatio }
 
     init(defaults: UserDefaults = .standard) {
         preferences = defaults

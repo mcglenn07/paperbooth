@@ -194,6 +194,36 @@ enum SelfTest {
         let disconnectedPixel = NSBitmapImageRep(cgImage: disconnectedImage).colorAt(x: 300, y: 400)!.usingColorSpace(.sRGB)!
         try require(disconnectedPixel.redComponent < 0.1 && disconnectedPixel.blueComponent < 0.1, "Disconnected guest view still shows an old camera frame")
         print("PASS: guest view renders the camera frame in landscape and portrait display sizes, plus countdown preview.")
+        guestModel.photos = photos
+        guestModel.updateProof()
+        try require(guestModel.showingFinishedSheet && guestModel.viewerAspectRatio == 1.5, "Completed session did not switch to the full sheet")
+        func renderedGuest() throws -> Data {
+            let renderer = ImageRenderer(content: GuestView(model: guestModel, camera: guestModel.camera).frame(width: 1280, height: 800))
+            guard let image = renderer.cgImage else { throw BoothError.message("Completed guest sheet did not render") }
+            return NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!
+        }
+        let completedGuest = try renderedGuest()
+        try completedGuest.write(to: output.appendingPathComponent("guest-finished-sheet.png"))
+        guestModel.camera.ready = true
+        guestModel.camera.guestFrame = photos[1]
+        guestModel.mirrored.toggle()
+        guestModel.error = "Simulated save failure"
+        try require(try renderedGuest() == completedGuest, "Finished sheet changed with live camera, mirror preference or save failure")
+        let completedRenderer = ImageRenderer(content: FinishedSheetView(image: guestModel.proof).frame(width: 900, height: 600))
+        guard let completedImage = completedRenderer.cgImage else { throw BoothError.message("Shared finished-sheet viewer did not render") }
+        let completedRep = NSBitmapImageRep(cgImage: completedImage)
+        for (index, point) in [(100, 100), (525, 100), (100, 375)].enumerated() {
+            let actual = completedRep.colorAt(x: point.0, y: point.1)!.usingColorSpace(.sRGB)!
+            let channels = [actual.redComponent, actual.greenComponent, actual.blueComponent]
+            try require(channels[index] > 0.6 && channels[index] > channels[(index + 1) % 3] + 0.2 && channels[index] > channels[(index + 2) % 3] + 0.2,
+                        "Finished-sheet viewer cropped or mirrored photo \(index + 1)")
+        }
+        guestModel.reset()
+        try require(!guestModel.showingFinishedSheet && (try renderedGuest()) != completedGuest, "Next guests did not return the viewer to the camera")
+        guestModel.photos = [photos[0], photos[1]]
+        guestModel.updateProof()
+        try require(!guestModel.showingFinishedSheet, "Incomplete session incorrectly shows a finished sheet")
+        print("PASS: completed sheet stays on both viewers, remains unmirrored, survives camera/save changes and resets for next guests.")
         if args.count > 3 {
             let templateURL = URL(fileURLWithPath: args[3])
             guard let layout = try TemplateLayout.load(for: templateURL), let template = NSImage(contentsOf: templateURL) else {
