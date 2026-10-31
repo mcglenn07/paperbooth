@@ -19,7 +19,7 @@ struct PaperboothApp: App {
             BoothView(model: model, camera: model.camera, guestDisplay: guestDisplay)
                 .frame(minWidth: 1060, minHeight: 720)
                 .preferredColorScheme(.light)
-                .onAppear { delegate.model = model }
+                .onAppear { delegate.model = model; delegate.spaceTrigger.model = model; delegate.spaceTrigger.install() }
                 .onDisappear { guestDisplay.close() }
         }
         .defaultSize(width: 1240, height: 820)
@@ -34,7 +34,9 @@ struct PaperboothApp: App {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    let spaceTrigger = SpaceTrigger()
     weak var model: BoothModel?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -124,6 +126,7 @@ struct BoothView: View {
                         }.padding(18).foregroundStyle(.white).allowsHitTesting(false) }
                     }.aspectRatio(model.viewerAspectRatio, contentMode: .fit).frame(maxWidth: .infinity, maxHeight: 350)
                         .background(boothInk).clipShape(RoundedRectangle(cornerRadius: model.showingFinishedSheet ? 0 : 16))
+                        .onTapGesture { NSApp.keyWindow?.makeFirstResponder(nil) }
 
                     HStack(spacing: 12) {
                         ForEach(0..<3) { index in
@@ -153,9 +156,12 @@ struct BoothView: View {
                         if model.takingPhotos {
                             Button("Cancel") { model.cancel() }.buttonStyle(.bordered).controlSize(.large)
                         } else if model.photos.count == 3 {
-                            primaryButton("Next guests", icon: "arrow.right") { requestReset("reset") }
+                            primaryButton(model.manualMode ? "Next guests · Space" : "Next guests", icon: "arrow.right") { requestReset("reset") }
                         } else {
-                            primaryButton(model.photos.isEmpty ? "Start session" : "Continue", icon: "camera.fill") { model.start() }
+                            primaryButton(model.manualMode ? "Capture photo \(model.photos.count + 1) · Space" : (model.photos.isEmpty ? "Start session" : "Continue"), icon: "camera.fill") {
+                                NSApp.keyWindow?.makeFirstResponder(nil)
+                                model.start()
+                            }
                                 .disabled(!camera.ready)
                         }
                     }.padding(.top, 4)
@@ -163,7 +169,7 @@ struct BoothView: View {
                         Button("Import 3 photos…") { requestReset("import") }
                         if !model.photos.isEmpty { Button("Retake all") { requestReset("reset") } }
                         Spacer()
-                        Text("\(model.countdownSeconds)s countdown · 3 poses").foregroundStyle(.tertiary)
+                        Text("\(model.countdownSeconds)s countdown · \(model.manualMode ? "Manual · Space per photo" : "Automatic · 3 poses")").foregroundStyle(.tertiary)
                     }.font(.system(size: 11)).buttonStyle(.borderless).disabled(model.takingPhotos)
                     Spacer(minLength: 0)
                 }.frame(maxWidth: .infinity)
@@ -269,6 +275,12 @@ struct SetupView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Camera & countdown") {
+                    Picker("Capture mode", selection: $model.manualMode) {
+                        Text("Automatic — three photos in sequence").tag(false)
+                        Text("Manual — one photo per press").tag(true)
+                    }.disabled(model.takingPhotos)
+                    Text("Manual: press Space or Capture photo for each countdown. When the finished sheet is displayed, Space returns to the camera for the next guests; press again to capture. Keep Paperbooth active; Space types normally when editing text.")
+                        .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Picker("Camera", selection: Binding(get: { camera.selectedID }, set: { camera.select($0) })) {
                             if camera.devices.isEmpty { Text("Enable camera to discover devices").tag("") }

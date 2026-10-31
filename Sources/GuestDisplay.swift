@@ -163,6 +163,7 @@ struct GuestView: View {
         if !camera.ready { return "Your photo moment is coming up." }
         if model.countdown != nil { return "Photo \(model.photos.count + 1) of 3 — look at the camera!" }
         if model.takingPhotos { return model.photos.isEmpty ? "Get ready!" : "Great! Try a new pose." }
+        if model.manualMode { return "Find your pose — ready for photo \(model.photos.count + 1) of 3." }
         return model.photos.isEmpty ? "Find your pose. Your host will start shortly." : "Hold on — your host will continue shortly."
     }
 }

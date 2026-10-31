@@ -75,6 +75,10 @@ enum SelfTest {
         let testPreferences = UserDefaults(suiteName: preferenceSuite)!
         defer { testPreferences.removePersistentDomain(forName: preferenceSuite) }
         let model = BoothModel(defaults: testPreferences)
+        try require(!model.manualMode, "Default mode should remain automatic")
+        model.manualMode = true
+        try require(BoothModel(defaults: UserDefaults(suiteName: preferenceSuite)!).manualMode, "Manual mode did not persist")
+        model.manualMode = false
         try require(model.mirrored, "First launch must retain the existing mirrored default")
         model.mirrored = false
         try require(!BoothModel(defaults: UserDefaults(suiteName: preferenceSuite)!).mirrored,
@@ -224,6 +228,73 @@ enum SelfTest {
         guestModel.updateProof()
         try require(!guestModel.showingFinishedSheet, "Incomplete session incorrectly shows a finished sheet")
         print("PASS: completed sheet stays on both viewers, remains unmirrored, survives camera/save changes and resets for next guests.")
+        var gate = SpacePressGate()
+        try require(gate.press(isRepeat: false), "Initial Space did not trigger")
+        try require(!gate.press(isRepeat: true) && !gate.press(isRepeat: false), "Held or duplicate Space retriggered")
+        gate.release()
+        try require(!gate.press(isRepeat: true), "Auto-repeat after focus change triggered capture")
+        gate.release()
+        try require(gate.press(isRepeat: false), "Fresh Space press failed")
+        let captureModel = BoothModel(defaults: testPreferences)
+        captureModel.manualMode = true
+        captureModel.camera.ready = true
+        captureModel.finishedSheetsFolder = output.appendingPathComponent("manual-mode-sheets")
+        var captured = 0
+        var countdownTicks = 0
+        let fakeCapture: (Bool) async throws -> NSImage = { _ in captured += 1; return photos[(captured - 1) % 3] }
+        let fakeSleep: (UInt64) async throws -> Void = { duration in
+            try Task.checkCancellation()
+            if duration == 1_000_000_000 { countdownTicks += 1 }
+            await Task.yield()
+        }
+        func finishCapture() throws {
+            let deadline = Date().addingTimeInterval(5)
+            while captureModel.takingPhotos && Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            try require(!captureModel.takingPhotos, "Capture sequence failed to finish")
+        }
+        for expected in 1...3 {
+            captureModel.runCapture(capture: fakeCapture, sleep: fakeSleep)
+            // Multiple presses while busy must neither capture nor queue shots.
+            for _ in 0..<5 { captureModel.runCapture(capture: fakeCapture, sleep: fakeSleep) }
+            try finishCapture()
+            try require(captured == expected && captureModel.photos.count == expected, "Manual trigger captured more than one photo")
+        }
+        try require(countdownTicks == captureModel.countdownSeconds * 3 && !captureModel.needsSave && captureModel.savedFolder != nil,
+                    "Manual photos need separate countdowns and a saved sheet after photo three")
+        captureModel.runCapture(capture: fakeCapture, sleep: fakeSleep)
+        try require(captured == 3 && !captureModel.takingPhotos && captureModel.showingFinishedSheet, "Capture action should not add a fourth photo")
+        captureModel.updateProof()
+        captureModel.triggerManualAction()
+        try require(captureModel.showingFinishedSheet && captureModel.discardAction == "reset", "Space discarded an unsaved sheet without the existing save prompt")
+        captureModel.discardAction = nil
+        captureModel.save()
+        var reviewGate = SpacePressGate()
+        if reviewGate.press(isRepeat: false) { captureModel.triggerManualAction() }
+        try require(captureModel.photos.isEmpty && !captureModel.showingFinishedSheet && !captureModel.takingPhotos && captureModel.countdown == nil && captured == 3,
+                    "Review Space should only prepare the next group, not start capturing")
+        try require(!reviewGate.press(isRepeat: true) && !reviewGate.press(isRepeat: false), "Held review key can trigger the next capture")
+        reviewGate.release()
+        try require(reviewGate.press(isRepeat: false), "Next group needs a fresh key press")
+        captureModel.runCapture(capture: fakeCapture, sleep: fakeSleep)
+        captureModel.cancel()
+        try finishCapture()
+        try require(captureModel.photos.isEmpty, "Cancelled countdown still captured a photo")
+        captureModel.runCapture(capture: { _ in throw BoothError.message("Test camera failure") }, sleep: fakeSleep)
+        try finishCapture()
+        try require(captureModel.photos.isEmpty && captureModel.error != nil, "Failed shot consumed a photo slot")
+        captureModel.error = nil
+        captureModel.manualMode = false
+        captureModel.runCapture(capture: fakeCapture, sleep: fakeSleep)
+        try finishCapture()
+        try require(captureModel.photos.count == 3 && captured == 6, "Automatic mode no longer captures three photos")
+        captureModel.reset()
+        captureModel.camera.ready = false
+        captureModel.runCapture(capture: fakeCapture, sleep: fakeSleep)
+        try require(!captureModel.takingPhotos && captured == 6, "Disconnected camera accepted a trigger")
+        print("PASS: Space advances saved review to ready without capturing, preserves unsaved sheets and requires a fresh press for the next shot.")
+        print("PASS: manual one-shot countdowns, busy/held key protection, cancellation, errors, completed-sheet hold, persistence and automatic mode.")
         if args.count > 3 {
             let templateURL = URL(fileURLWithPath: args[3])
             guard let layout = try TemplateLayout.load(for: templateURL), let template = NSImage(contentsOf: templateURL) else {

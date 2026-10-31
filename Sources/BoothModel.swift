@@ -13,6 +13,7 @@ final class BoothModel: ObservableObject {
     @Published var theme: String { didSet { updateProof(); preferences.set(theme, forKey: "theme") } }
     @Published var countdownSeconds: Int { didSet { preferences.set(countdownSeconds, forKey: "countdown") } }
     @Published var mirrored: Bool { didSet { preferences.set(mirrored, forKey: "mirrorPhotos") } }
+    @Published var manualMode: Bool { didSet { preferences.set(manualMode, forKey: "manualMode") } }
     @Published var background: NSImage?
     @Published var titleArtwork: NSImage?
     @Published var overlay: NSImage?
@@ -61,6 +62,7 @@ final class BoothModel: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         preferences = defaults
+        manualMode = defaults.bool(forKey: "manualMode")
         mirrored = defaults.object(forKey: "mirrorPhotos") == nil ? true : defaults.bool(forKey: "mirrorPhotos")
         title = defaults.string(forKey: "eventTitle") ?? "A NIGHT TO\nREMEMBER"
         subtitle = defaults.string(forKey: "eventSubtitle") ?? "GOOD PEOPLE. GREAT MEMORIES."
@@ -105,34 +107,58 @@ final class BoothModel: ObservableObject {
         templateBackground = base
     }
 
+    func triggerManualAction() {
+        guard manualMode, !takingPhotos, !showSettings, error == nil, discardAction == nil else { return }
+        if showingFinishedSheet {
+            // Use the same save-before-reset protection as the Next guests button.
+            if needsSave { discardAction = "reset" }
+            else { reset() }
+            return
+        }
+        start()
+    }
+
     func start() {
+        runCapture(capture: { [camera] mirrored in try await camera.capture(mirrored: mirrored) },
+                   sleep: { try await Task.sleep(nanoseconds: $0) })
+    }
+
+    // The same sequence is used by the button and keyboard trigger. Injectable I/O
+    // lets tests exercise actual countdown/cancellation behavior without a camera.
+    func runCapture(capture: @escaping (Bool) async throws -> NSImage,
+                    sleep: @escaping (UInt64) async throws -> Void) {
         guard !takingPhotos, camera.ready, photos.count < 3 else { return }
+        let targetCount = manualMode ? photos.count + 1 : 3
         takingPhotos = true
         task = Task {
             do {
-                while photos.count < 3 {
+                while photos.count < targetCount {
                     status = "Get ready for photo \(photos.count + 1) of 3"
                     for tick in stride(from: countdownSeconds, through: 1, by: -1) {
                         try Task.checkCancellation()
                         countdown = tick
-                        try await Task.sleep(nanoseconds: 1_000_000_000)
+                        try await sleep(1_000_000_000)
                     }
                     countdown = nil
                     status = "Hold that pose…"
-                    let photo = try await camera.capture(mirrored: mirrored)
+                    let photo = try await capture(mirrored)
                     try Task.checkCancellation()
                     photos.append(photo)
                     updateProof()
                     flash = true
-                    try await Task.sleep(nanoseconds: 160_000_000)
+                    try await sleep(160_000_000)
                     flash = false
-                    if photos.count < 3 {
+                    if photos.count < targetCount {
                         status = "Nice! Change your pose."
-                        try await Task.sleep(nanoseconds: 1_200_000_000)
+                        try await sleep(1_200_000_000)
                     }
                 }
-                status = "Your keepsake is ready."
-                if mergedOutputFolder != nil { save() }
+                if photos.count == 3 {
+                    status = "Your keepsake is ready."
+                    if mergedOutputFolder != nil { save() }
+                } else {
+                    status = "Photo \(photos.count) captured. Press Space or Capture photo for the next pose."
+                }
             } catch is CancellationError {
                 status = photos.isEmpty ? "Session cancelled." : "Paused. Your captured photos are kept."
             } catch {
